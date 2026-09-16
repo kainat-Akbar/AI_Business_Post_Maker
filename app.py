@@ -2236,83 +2236,6 @@ def get_templates():
         }), 500
 
 
-def download_image_from_url(url):
-    if not url:
-        return None
-    response = requests.get(url, timeout=30)
-    if response.status_code != 200:
-        raise Exception("Unable to download image")
-    return Image.open(BytesIO(response.content)).convert("RGBA")
-
-def get_font(size=42, bold=False):
-    possible_fonts = []
-    if bold:
-        possible_fonts = [
-            "C:/Windows/Fonts/arialbd.ttf",
-            "C:/Windows/Fonts/segoeuib.ttf",
-        ]
-    else:
-        possible_fonts = [
-            "C:/Windows/Fonts/arial.ttf",
-            "C:/Windows/Fonts/segoeui.ttf",
-        ]
-    for font_path in possible_fonts:
-        if os.path.exists(font_path):
-            return ImageFont.truetype(font_path, size)
-    return ImageFont.load_default()
-
-def hex_to_rgb(hex_color, default=(99, 102, 241)):
-    try:
-        value = hex_color.replace("#", "")
-        if len(value) != 6:
-            return default
-        return tuple(int(value[i:i+2], 16) for i in (0, 2, 4))
-    except Exception:
-        return default
-
-def fit_image(image, width, height):
-    return ImageOps.fit(image, (width, height), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
-
-def add_rounded_image(base, image, box, radius=25):
-    x, y, width, height = box
-    image = fit_image(image, width, height)
-    mask = Image.new("L", (width, height), 0)
-    draw = ImageDraw.Draw(mask)
-    draw.rounded_rectangle((0, 0, width, height), radius=radius, fill=255)
-    temp = Image.new("RGBA", (width, height), (255, 255, 255, 0))
-    temp.paste(image, (0, 0), mask)
-    base.alpha_composite(temp, (x, y))
-
-def draw_centered_text(image, text, y, font, fill, max_width=900):
-    draw = ImageDraw.Draw(image)
-    words = text.split()
-    lines = []
-    current = ""
-
-    for word in words:
-        test = (current + " " + word).strip()
-        bbox = draw.textbbox((0, 0), test, font=font)
-        width = bbox[2] - bbox[0]
-        if width <= max_width:
-            current = test
-        else:
-            if current:
-                lines.append(current)
-            current = word
-    if current:
-        lines.append(current)
-
-    line_height = font.getbbox("Ag")[3] - font.getbbox("Ag")[1] + 10
-    current_y = y
-
-    for line in lines:
-        bbox = draw.textbbox((0, 0), line, font=font)
-        width = bbox[2] - bbox[0]
-        x = (image.width - width) // 2
-        draw.text((x, current_y), line, font=font, fill=fill)
-        current_y += line_height
-
-    return current_y
 
 # =========================================================
 # HELPER FUNCTIONS
@@ -2385,42 +2308,44 @@ def download_image_from_url(url):
 
 def get_font(size=20, bold=False):
     """
-    Safely load font.
+    Load a real font on both Windows and Linux/Docker.
+    Never silently fall back to PIL's tiny default font.
     """
 
-    try:
+    if bold:
+        possible_fonts = [
+            # Windows
+            "C:/Windows/Fonts/arialbd.ttf",
+            "C:/Windows/Fonts/segoeuib.ttf",
 
-        font_name = (
-            "arialbd.ttf"
-            if bold
-            else "arial.ttf"
-        )
+            # Linux / Docker
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+        ]
+    else:
+        possible_fonts = [
+            # Windows
+            "C:/Windows/Fonts/arial.ttf",
+            "C:/Windows/Fonts/segoeui.ttf",
 
-        return ImageFont.truetype(
-            font_name,
-            size
-        )
+            # Linux / Docker
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+        ]
 
-    except Exception:
+    for font_path in possible_fonts:
+        if os.path.exists(font_path):
+            try:
+                return ImageFont.truetype(font_path, size=size)
+            except Exception as e:
+                print(
+                    f"Font load failed: {font_path} -> {e}"
+                )
 
-        try:
-
-            font_name = (
-                "DejaVuSans-Bold.ttf"
-                if bold
-                else "DejaVuSans.ttf"
-            )
-
-            return ImageFont.truetype(
-                font_name,
-                size
-            )
-
-        except Exception:
-
-            return ImageFont.load_default()
-
-
+    raise RuntimeError(
+        "No suitable TTF font found. "
+        "Install DejaVu/Liberation fonts in the Docker image."
+    )
 # =========================================================
 # COMPLETE POST IMAGE GENERATOR
 # =========================================================

@@ -2,9 +2,5 @@ venv/
 __pycache__/
 *.pyc
 .env
-google-play-service-account.jsoncreate_admin.py
-.env
 google-play-service-account.json
-venv/
-__pycache__/
 create_admin.py

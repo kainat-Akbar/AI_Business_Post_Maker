@@ -7,3 +7,4 @@ google-play-service-account.jsoncreate_admin.py
 google-play-service-account.json
 venv/
 __pycache__/
+create_admin.py

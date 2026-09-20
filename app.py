@@ -172,7 +172,48 @@ class PasswordResetCode(db.Model):
         default=datetime.utcnow,
         nullable=False
     )
-    
+    # =========================================================
+# ADMIN WEB LOGIN HANDOFF CODE
+# =========================================================
+
+class AdminWebLoginCode(db.Model):
+    __tablename__ = "admin_web_login_codes"
+
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
+
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("users.id"),
+        nullable=False,
+        index=True
+    )
+
+    code_hash = db.Column(
+        db.String(64),
+        nullable=False,
+        unique=True,
+        index=True
+    )
+
+    expires_at = db.Column(
+        db.DateTime,
+        nullable=False
+    )
+
+    used = db.Column(
+        db.Boolean,
+        default=False,
+        nullable=False
+    )
+
+    created_at = db.Column(
+        db.DateTime,
+        default=datetime.utcnow,
+        nullable=False
+    )
 # =========================
 # 2. BUSINESS PROFILES
 # =========================
@@ -889,6 +930,226 @@ def login():
         return jsonify({
             "success": False,
             "message": "Login failed due to server error"
+        }), 500
+
+    # =========================================================
+# ADMIN WEB LOGIN - CREATE ONE-TIME LOGIN CODE
+# =========================================================
+
+@app.route("/api/admin/web-login-code", methods=["POST"])
+@jwt_required()
+def create_admin_web_login_code():
+    try:
+        # Get logged-in user ID from JWT
+        user_id = get_jwt_identity()
+
+        user = User.query.get(int(user_id))
+
+        # User not found
+        if not user:
+            return jsonify({
+                "success": False,
+                "message": "User not found"
+            }), 404
+
+        # Only admin can create an Admin Web login code
+        if user.role != "admin":
+            return jsonify({
+                "success": False,
+                "message": "Admin access required"
+            }), 403
+
+        # Account must be active
+        if user.status != "active":
+            return jsonify({
+                "success": False,
+                "message": "Your account is not active"
+            }), 403
+
+        # -----------------------------------------------------
+        # Delete old unused codes for this admin
+        # -----------------------------------------------------
+
+        AdminWebLoginCode.query.filter_by(
+            user_id=user.id,
+            used=False
+        ).delete(synchronize_session=False)
+
+        # -----------------------------------------------------
+        # Generate secure temporary code
+        # -----------------------------------------------------
+
+        raw_code = secrets.token_urlsafe(32)
+
+        # Store only SHA-256 hash in database
+        code_hash = hashlib.sha256(
+            raw_code.encode("utf-8")
+        ).hexdigest()
+
+        # Code will expire after 2 minutes
+        expires_at = datetime.utcnow() + timedelta(minutes=2)
+
+        login_code = AdminWebLoginCode(
+            user_id=user.id,
+            code_hash=code_hash,
+            expires_at=expires_at,
+            used=False
+        )
+
+        db.session.add(login_code)
+        db.session.commit()
+
+        return jsonify({
+            "success": True,
+            "message": "Admin web login code created",
+            "code": raw_code,
+            "expires_in": 120
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+
+        print(
+            "ADMIN WEB LOGIN CODE ERROR:",
+            str(e)
+        )
+
+        return jsonify({
+            "success": False,
+            "message": "Unable to create admin web login code"
+        }), 500
+    # =========================================================
+# ADMIN WEB LOGIN - EXCHANGE ONE-TIME CODE FOR JWT
+# =========================================================
+
+@app.route("/api/admin/web-login", methods=["POST"])
+def admin_web_login():
+    try:
+        data = request.get_json() or {}
+
+        raw_code = (data.get("code") or "").strip()
+
+        # Code is required
+        if not raw_code:
+            return jsonify({
+                "success": False,
+                "message": "Admin web login code is required"
+            }), 400
+
+        # -----------------------------------------------------
+        # Hash received code
+        # -----------------------------------------------------
+
+        code_hash = hashlib.sha256(
+            raw_code.encode("utf-8")
+        ).hexdigest()
+
+        # -----------------------------------------------------
+        # Find code
+        # -----------------------------------------------------
+
+        login_code = AdminWebLoginCode.query.filter_by(
+            code_hash=code_hash
+        ).first()
+
+        if not login_code:
+            return jsonify({
+                "success": False,
+                "message": "Invalid admin web login code"
+            }), 401
+
+        # -----------------------------------------------------
+        # Code can only be used once
+        # -----------------------------------------------------
+
+        if login_code.used:
+            return jsonify({
+                "success": False,
+                "message": "Admin web login code has already been used"
+            }), 401
+
+        # -----------------------------------------------------
+        # Check expiry
+        # -----------------------------------------------------
+
+        if login_code.expires_at <= datetime.utcnow():
+            return jsonify({
+                "success": False,
+                "message": "Admin web login code has expired"
+            }), 401
+
+        # -----------------------------------------------------
+        # Find admin user
+        # -----------------------------------------------------
+
+        user = User.query.get(login_code.user_id)
+
+        if not user:
+            return jsonify({
+                "success": False,
+                "message": "Admin user not found"
+            }), 404
+
+        # -----------------------------------------------------
+        # Verify admin role
+        # -----------------------------------------------------
+
+        if user.role != "admin":
+            return jsonify({
+                "success": False,
+                "message": "Admin access required"
+            }), 403
+
+        # -----------------------------------------------------
+        # Verify active account
+        # -----------------------------------------------------
+
+        if user.status != "active":
+            return jsonify({
+                "success": False,
+                "message": "Your account is not active"
+            }), 403
+
+        # -----------------------------------------------------
+        # Mark code as USED
+        # -----------------------------------------------------
+
+        login_code.used = True
+
+        # -----------------------------------------------------
+        # Create normal JWT
+        # -----------------------------------------------------
+
+        access_token = create_access_token(
+            identity=str(user.id)
+        )
+
+        db.session.commit()
+
+        return jsonify({
+            "success": True,
+            "message": "Admin web login successful",
+            "token": access_token,
+            "user": {
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+                "role": user.role,
+                "status": user.status
+            }
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+
+        print(
+            "ADMIN WEB LOGIN ERROR:",
+            str(e)
+        )
+
+        return jsonify({
+            "success": False,
+            "message": "Unable to complete admin web login"
         }), 500
 #sign up 
 @app.route("/api/register", methods=["POST"])
